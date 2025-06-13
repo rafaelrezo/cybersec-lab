@@ -1,4 +1,3 @@
-
 # 🛡️ Laboratório de Cibersegurança - Kali Linux + Alvos Vulneráveis
 
 Este projeto Terraform cria um ambiente completo de aprendizado de cibersegurança na AWS Academy, com Kali Linux para pentest e múltiplas aplicações vulneráveis como alvos.
@@ -60,7 +59,7 @@ sudo apt install tigervnc-viewer
 ### Passo 1: Clonar o Repositório
 
 ```bash
-git clone <URL_DO_REPOSITORIO>
+git clone git@github.com:rafaelrezo/cybersec-lab.git
 cd cybersec-lab
 ```
 
@@ -100,7 +99,7 @@ cp terraform.tfvars.example terraform.tfvars
 nano terraform.tfvars
 ```
 
-**Configurações obrigatórias no terraform.tfvars:**
+**git@github.com:rafaelrezo/cybersec-lab.gitConfigurações obrigatórias no terraform.tfvars:**
 
 ```hcl
 # SEU NOME (obrigatório)
