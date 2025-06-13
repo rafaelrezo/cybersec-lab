@@ -1,6 +1,6 @@
 # =============================================================================
 # MAIN.TF - Laboratório de Cibersegurança com Kali Linux + OWASP Juice Shop
-# AWS Academy Compatible
+# AWS Academy Compatible - Configurado para Burp Suite HTTPS Intercept
 # =============================================================================
 
 terraform {
@@ -23,7 +23,7 @@ provider "aws" {
       Environment = var.environment
       Student     = var.student_name
       Course      = "Pentest-Training"
-      Lab         = "Kali-JuiceShop"
+      Lab         = "Kali-JuiceShop-Burp"
     }
   }
 }
@@ -155,7 +155,7 @@ resource "aws_route_table_association" "target_rta" {
 resource "aws_security_group" "kali_sg" {
   name_prefix = "${var.lab_name}-kali-sg"
   vpc_id      = aws_vpc.lab_vpc.id
-  description = "Security group for Kali Linux - Attacker machine"
+  description = "Security group for Kali Linux - Attacker machine with Burp Suite"
 
   # SSH
   ingress {
@@ -180,6 +180,24 @@ resource "aws_security_group" "kali_sg" {
     description = "RDP"
     from_port   = 3389
     to_port     = 3389
+    protocol    = "tcp"
+    cidr_blocks = var.allowed_cidr_blocks
+  }
+
+  # Burp Suite Proxy (8080)
+  ingress {
+    description = "Burp Suite Proxy"
+    from_port   = 8080
+    to_port     = 8080
+    protocol    = "tcp"
+    cidr_blocks = var.allowed_cidr_blocks
+  }
+
+  # Burp Collaborator (opcional)
+  ingress {
+    description = "Burp Collaborator"
+    from_port   = 8081
+    to_port     = 8081
     protocol    = "tcp"
     cidr_blocks = var.allowed_cidr_blocks
   }
@@ -229,7 +247,7 @@ resource "aws_security_group" "kali_sg" {
 resource "aws_security_group" "target_sg" {
   name_prefix = "${var.lab_name}-target-sg"
   vpc_id      = aws_vpc.lab_vpc.id
-  description = "Security group for vulnerable targets"
+  description = "Security group for vulnerable targets with HTTPS support"
 
   # SSH (para administração)
   ingress {
@@ -240,16 +258,25 @@ resource "aws_security_group" "target_sg" {
     cidr_blocks = var.allowed_cidr_blocks
   }
 
-  # Juice Shop
+  # Juice Shop HTTP
   ingress {
-    description = "Juice Shop"
+    description = "Juice Shop HTTP"
     from_port   = 3000
     to_port     = 3000
     protocol    = "tcp"
     cidr_blocks = [var.vpc_cidr, var.allowed_cidr_blocks[0]]
   }
 
-  # HTTP/HTTPS
+  # Juice Shop HTTPS
+  ingress {
+    description = "Juice Shop HTTPS"
+    from_port   = 3443
+    to_port     = 3443
+    protocol    = "tcp"
+    cidr_blocks = [var.vpc_cidr, var.allowed_cidr_blocks[0]]
+  }
+
+  # HTTP/HTTPS padrão
   ingress {
     description = "HTTP"
     from_port   = 80
@@ -333,15 +360,21 @@ resource "aws_key_pair" "lab_key" {
 # User data para Kali Linux
 locals {
   kali_user_data = base64encode(templatefile("${path.module}/kali_setup.sh", {
-    student_name = var.student_name
-    vnc_password = var.vnc_password
-    lab_name     = var.lab_name
+    student_name   = var.student_name
+    vnc_password   = var.vnc_password
+    lab_name       = var.lab_name
+    burp_proxy_ip  = aws_instance.kali_linux.private_ip
+    target_ip      = aws_instance.vulnerable_targets.private_ip
+    enable_burp_pro = var.enable_burp_professional
   }))
 
   target_user_data = base64encode(templatefile("${path.module}/target_setup.sh", {
-    student_name    = var.student_name
-    lab_name        = var.lab_name
-    juice_shop_port = var.juice_shop_port
+    student_name      = var.student_name
+    lab_name          = var.lab_name
+    juice_shop_port   = var.juice_shop_port
+    juice_shop_https_port = var.juice_shop_https_port
+    enable_https      = var.enable_https_targets
+    kali_ip          = aws_instance.kali_linux.private_ip
   }))
 }
 
@@ -435,6 +468,7 @@ output "lab_summary" {
     lab_name     = var.lab_name
     aws_region   = var.aws_region
     vpc_id       = aws_vpc.lab_vpc.id
+    burp_configured = "Burp Suite configurado para interceptação HTTPS"
   }
 }
 
@@ -452,6 +486,7 @@ output "kali_linux_access" {
       "VNC Viewer -> ${aws_eip.kali_eip[0].public_ip}:5901" :
       "VNC Viewer -> ${aws_instance.kali_linux.public_ip}:5901"
     vnc_password = "Configure com a variável vnc_password"
+    burp_proxy = "${aws_instance.kali_linux.private_ip}:8080"
   }
 }
 
@@ -460,14 +495,33 @@ output "target_access" {
   value = {
     public_ip = var.use_elastic_ip ? aws_eip.target_eip[0].public_ip : aws_instance.vulnerable_targets.public_ip
     private_ip = aws_instance.vulnerable_targets.private_ip
-    juice_shop_url = var.use_elastic_ip ?
+    juice_shop_http = var.use_elastic_ip ?
       "http://${aws_eip.target_eip[0].public_ip}:${var.juice_shop_port}" :
       "http://${aws_instance.vulnerable_targets.public_ip}:${var.juice_shop_port}"
+    juice_shop_https = var.enable_https_targets ? (
+      var.use_elastic_ip ?
+      "https://${aws_eip.target_eip[0].public_ip}:${var.juice_shop_https_port}" :
+      "https://${aws_instance.vulnerable_targets.public_ip}:${var.juice_shop_https_port}"
+    ) : "HTTPS disabled"
     ssh_command = var.ssh_public_key != "" ? (
       var.use_elastic_ip ?
       "ssh -i ~/.ssh/lab_key.pem ubuntu@${aws_eip.target_eip[0].public_ip}" :
       "ssh -i ~/.ssh/lab_key.pem ubuntu@${aws_instance.vulnerable_targets.public_ip}"
     ) : "SSH key not configured"
+  }
+}
+
+output "burp_suite_setup" {
+  description = "Configurações do Burp Suite para interceptação HTTPS"
+  value = {
+    proxy_listener = "${aws_instance.kali_linux.private_ip}:8080"
+    ca_certificate = "Baixar em: http://${aws_instance.kali_linux.private_ip}:8080/cert"
+    browser_proxy = "Configure browser para usar ${aws_instance.kali_linux.private_ip}:8080"
+    https_intercept = "Configurado automaticamente para interceptar HTTPS"
+    target_hosts = [
+      "${aws_instance.vulnerable_targets.private_ip}:${var.juice_shop_port}",
+      var.enable_https_targets ? "${aws_instance.vulnerable_targets.private_ip}:${var.juice_shop_https_port}" : null
+    ]
   }
 }
 
@@ -478,6 +532,7 @@ output "lab_network" {
     kali_subnet = var.kali_subnet_cidr
     target_subnet = var.target_subnet_cidr
     internal_access = "Kali pode acessar targets diretamente via IPs privados"
+    burp_network = "Tráfego roteado via Burp Suite proxy em ${aws_instance.kali_linux.private_ip}:8080"
   }
 }
 
@@ -486,18 +541,33 @@ output "security_warnings" {
   value = {
     warning1 = "⚠️  Este laboratório contém aplicações VULNERÁVEIS por design"
     warning2 = "⚠️  Use apenas para fins educacionais em ambiente isolado"
-    warning3 = "⚠️  Não exponha para internet sem proteção adequada"
-    warning4 = "⚠️  Monitore custos na AWS - destrua o lab quando não usar"
+    warning3 = "⚠️  Burp Suite está configurado para interceptar tráfego HTTPS"
+    warning4 = "⚠️  Certificados SSL são auto-assinados (aceite warnings do browser)"
+    warning5 = "⚠️  Monitore custos na AWS - destrua o lab quando não usar"
+  }
+}
+
+output "burp_suite_instructions" {
+  description = "Instruções para usar o Burp Suite"
+  value = {
+    step1 = "1. Conecte via VNC no Kali Linux"
+    step2 = "2. Abra Burp Suite (ícone na área de trabalho)"
+    step3 = "3. Configure browser proxy: ${aws_instance.kali_linux.private_ip}:8080"
+    step4 = "4. Baixe certificado CA: http://${aws_instance.kali_linux.private_ip}:8080/cert"
+    step5 = "5. Instale certificado no browser"
+    step6 = "6. Acesse targets HTTPS e intercete requisições"
+    step7 = "7. Use Burp Scanner, Intruder e Repeater para análise"
   }
 }
 
 output "next_steps" {
   description = "Próximos passos após o deploy"
   value = {
-    step1 = "Aguarde 5-10 minutos para conclusão da instalação"
+    step1 = "Aguarde 10-15 minutos para conclusão da instalação"
     step2 = "Acesse o Kali via VNC usando as credenciais configuradas"
-    step3 = "Teste conectividade: ping para o IP privado do target"
-    step4 = "Inicie os exercícios de pentest no Juice Shop"
-    step5 = "Execute 'terraform destroy' quando terminar para evitar custos"
+    step3 = "Configure Burp Suite proxy no browser (instruções no output)"
+    step4 = "Teste interceptação HTTPS no Juice Shop"
+    step5 = "Inicie os exercícios de pentest com Burp Suite"
+    step6 = "Execute 'terraform destroy' quando terminar para evitar custos"
   }
 }
