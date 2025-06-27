@@ -4,16 +4,19 @@
 # Região AWS onde o laboratório será criado
 aws_region = "us-east-1"
 
-# Tipo da instância EC2 (recomendado: t3.medium ou superior)
-instance_type = "t3.medium"
+# Tipo da instância EC2 do atacante (recomendado: t3.medium ou superior)
+attacker_instance_type = "t3.medium"
+
+# Tipo da instância EC2 do alvo (pode ser menor)
+target_instance_type = "t3.small"
 
 # Nome da chave SSH (deve existir na sua conta AWS)
 # Criar em: AWS Console > EC2 > Key Pairs
 key_name = "sua-chave-ssh"
 
-# CIDR permitido para acesso (0.0.0.0/0 = qualquer IP)
+# CIDR permitido para acesso externo ao Kali (0.0.0.0/0 = qualquer IP)
 # Para maior segurança, use o seu IP: "SEU.IP.AQUI/32"
 allowed_cidr = "0.0.0.0/0"
 
-# Nome do laboratório (usado como prefixo nos recursos)
-lab_name = "cybersec-lab-engenharia"
+# Nome do laboratório 
+lab_name = "cybersec-lab"

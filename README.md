@@ -11,41 +11,39 @@ Este projeto cria um laboratório completo de cybersecurity na AWS usando Terraf
 ## 📋 Pré-requisitos
 
 1. **Conta AWS** com permissões para criar recursos EC2, VPC, etc.
-2. **Terraform** instalado (versão 1.0+)
-3. **AWS CLI** configurado com suas credenciais
+2. **[Terraform](https://developer.hashicorp.com/terraform/install)** instalado (versão 1.0+)
+3. **[AWS CLI](https://docs.aws.amazon.com/cli/latest/userguide/getting-started-install.html)** configurado com suas credenciais
 4. **Par de chaves SSH** criado na AWS
 
 ## 🚀 Como usar
 
 ### 1. Preparar o ambiente
 
+Escolha um direteório para armazenar o repositório do Lab.
+
 ```bash
 # Clone ou baixe os arquivos do projeto
-mkdir cybersec-lab
-cd cybersec-lab
-
-# Copie os arquivos Terraform para este diretório:
-# - main.tf (arquivo principal do Terraform)
-# - setup_lab.sh (script de configuração)
+git clone git@github.com:rafaelrezo/cybersec-lab.git
+cd cybersec-git
 ```
+Para usar o Terraform, é importante instalar o AWS CLI, e configurar as [credenciais de curto prazo](https://docs-aws-amazon-com.translate.goog/cli/latest/userguide/getting-started-quickstart.html?_x_tr_sl=en&_x_tr_tl=pt&_x_tr_hl=pt&_x_tr_pto=tc). 
 
-### 2. Configurar variáveis
+Para localizar suas credenciais no ambiente Vocarium do AWS Academy, inicie o "Laboratório de Aprendizagem", e localicalize o conteúdo do botão "show" e a região utilizada, conforme figura:
+
+![Credenciais para configuração AWS CLI](images/credenciais.png)
+
+Após configurar suas credencias e parâmetros do AWS CLI, teste tentando listar os arquivos no S3, deve executar sem retornar erro nenhum. Cada vez que o Laboratório de Aprendizagem do AWS Academy é iniciado, as credenciais do AWS CLI mudam.
 
 ```bash
-# Copie o arquivo de exemplo
-cp terraform.tfvars.example terraform.tfvars
-
-# Edite o arquivo com suas configurações
-vim terraform.tfvars
+$ aws s3 ls
+$
+# Se retornar algum erro, verifique os 
+# arquivos ~/.aws/credentials e ~/.aws/config.
 ```
 
-**Configurações importantes no terraform.tfvars:**
-- `key_name`: Nome da sua chave SSH na AWS
-- `allowed_cidr`: IP permitido para acesso (recomendado: seu IP/32)
-- `aws_region`: Região AWS desejada
-- `instance_type`: Tipo da instância (mínimo t3.medium)
+### 2. Criar a chave SSH na AWS
 
-### 3. Criar a chave SSH na AWS
+Para acessar suas máquinas por ssh, será necessário configurar a chave de acesso.
 
 ```bash
 # No AWS Console:
@@ -54,6 +52,38 @@ vim terraform.tfvars
 aws ec2 create-key-pair --key-name minha-chave-cybersec --query 'KeyMaterial' --output text > minha-chave-cybersec.pem
 chmod 400 minha-chave-cybersec.pem
 ```
+Para verificar esta etapa, verifique se a chave existe com a permissão "-r--------"
+
+```bash
+$ ls -lah | grep minha-chave-cybersec.pem
+-r--------  1 seu_usuario seu_usuario 1.7K Jun 27 14:32 minha-chave-cybersec.pem
+
+```
+### 3. Configurar variáveis Terraform
+
+```bash
+# Copie o arquivo de exemplo
+cp terraform.tfvars.example terraform.tfvars
+
+# Edite o arquivo com suas configurações com seu editor de texto preferido
+vim terraform.tfvars
+
+#ou
+
+nano terraform.tfvars
+
+#ou
+
+code terraform.tfvars
+```
+
+**Configurações importantes no terraform.tfvars:**
+- `key_name`: Nome da sua chave SSH na AWS
+- `allowed_cidr`: IP permitido para acesso (recomendado: seu IP/32)
+- `aws_region`: Região AWS desejada
+- `instance_type`: Tipo da instância (mínimo t3.medium)
+
+
 
 ### 4. Deploy da infraestrutura
 
@@ -63,9 +93,27 @@ terraform init
 
 # Verificar o plano de execução
 terraform plan
+```
 
+Deve retornar algo similar a 
+
+```bash
+...
+Plan: 7 to add, 0 to change, 0 to destroy.
+
+Changes to Outputs:
+  + instance_dns       = (known after apply)
+  + instance_public_ip = (known after apply)
+  + juice_shop_url     = (known after apply)
+  + rdp_connection     = (known after apply)
+  + ssh_command        = (known after apply)
+  + vnc_connection     = (known after apply)
+
+```
+
+```bash
 # Aplicar as configurações
-terraform apply
+terraform apply -auto-approve
 ```
 
 ### 5. Aguardar a configuração
