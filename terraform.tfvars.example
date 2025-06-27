@@ -18,5 +18,19 @@ key_name = "sua-chave-ssh"
 # Para maior segurança, use o seu IP: "SEU.IP.AQUI/32"
 allowed_cidr = "0.0.0.0/0"
 
-# Nome do laboratório 
+# Nome do laboratório (usado como prefixo nos recursos)
 lab_name = "cybersec-lab"
+
+# === SENHAS DE ACESSO (PERSONALIZE!) ===
+
+# Senha para acesso VNC (recomendado: 8+ caracteres)
+vnc_password = "MinhaVNC2024!"
+
+# Senha para RDP e SSH do usuário ubuntu (recomendado: senha forte)
+rdp_password = "CyberSec@2024#Lab"
+
+# DICAS DE SEGURANÇA:
+# - Use senhas fortes e únicas
+# - Evite senhas óbvias como "123456" ou "password"
+# - Combine letras, números e símbolos
+# - Considere usar um gerenciador de senhas

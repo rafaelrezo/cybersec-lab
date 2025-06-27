@@ -53,6 +53,20 @@ variable "lab_name" {
   default     = "cybersec-lab"
 }
 
+variable "vnc_password" {
+  description = "Senha para acesso VNC"
+  type        = string
+  default     = "vncpassword"
+  sensitive   = true
+}
+
+variable "rdp_password" {
+  description = "Senha para acesso RDP (usuário ubuntu)"
+  type        = string
+  default     = "cybersec2024"
+  sensitive   = true
+}
+
 # VPC Principal
 resource "aws_vpc" "cybersec_vpc" {
   cidr_block           = "172.16.0.0/16"
@@ -257,16 +271,345 @@ data "aws_ssm_parameter" "ubuntu_ami" {
   name = "/aws/service/canonical/ubuntu/server/22.04/stable/current/amd64/hvm/ebs-gp2/ami-id"
 }
 
-# User Data para Kali (Atacante)
+# User Data Scripts
 locals {
-  attacker_user_data = base64encode(templatefile("${path.module}/setup_attacker.sh", {
-    lab_name       = var.lab_name
-    target_ip      = aws_instance.target.private_ip
-  }))
-  
-  target_user_data = base64encode(templatefile("${path.module}/setup_target.sh", {
-    lab_name = var.lab_name
-  }))
+  attacker_user_data = base64encode(<<-EOT
+#!/bin/bash
+export LAB_NAME="${var.lab_name}"
+export TARGET_IP="${aws_instance.target.private_ip}"
+export VNC_PASSWORD="${var.vnc_password}"
+export RDP_PASSWORD="${var.rdp_password}"
+export LOG_FILE="/var/log/attacker-setup.log"
+export MAIN_USER="ubuntu"
+
+log() { echo "$(date '+%Y-%m-%d %H:%M:%S') - $1" | tee -a $LOG_FILE; }
+
+log "=== CONFIGURANDO ARSENAL WEB SECURITY ==="
+export DEBIAN_FRONTEND=noninteractive
+sudo apt-get update -y && apt-get upgrade -y
+
+# Ferramentas essenciais
+sudo apt-get install -y curl wget git vim ubuntu-desktop-minimal tightvncserver firefox openjdk-11-jdk python3-pip nmap sqlmap hydra gobuster nikto xrdp
+
+# Configurar usuario com senha personalizada
+sudo usermod -aG sudo $MAIN_USER
+sudo echo "$MAIN_USER:$RDP_PASSWORD" | chpasswd
+
+# Docker
+curl -fsSL https://download.docker.com/linux/ubuntu/gpg | gpg --dearmor -o /usr/share/keyrings/docker-archive-keyring.gpg
+sudo echo "deb [signed-by=/usr/share/keyrings/docker-archive-keyring.gpg] https://download.docker.com/linux/ubuntu $(lsb_release -cs) stable" | tee /etc/apt/sources.list.d/docker.list
+sudo apt-get update -y && apt-get install -y docker-ce
+sudo systemctl enable docker && systemctl start docker
+sudo usermod -aG docker $MAIN_USER
+
+# Burp Suite
+cd /opt
+wget -O burpsuite_community.jar "https://portswigger.net/burp/releases/download?product=community&type=jar"
+echo '#!/bin/bash' > /usr/local/bin/burpsuite
+echo 'cd /opt' >> /usr/local/bin/burpsuite
+echo 'java -jar burpsuite_community.jar "$@"' >> /usr/local/bin/burpsuite
+chmod +x /usr/local/bin/burpsuite
+
+# VNC com senha personalizada - método mais robusto
+log "Configurando VNC com senha personalizada..."
+
+# Instalar expect para automação
+sudo apt-get install -y expect
+
+# Configurar VNC como usuário ubuntu
+sudo -u $MAIN_USER bash << 'VNCSETUP'
+# Criar diretório VNC
+mkdir -p ~/.vnc
+
+# Método 1: Usar vncpasswd com expect
+expect << EOF
+set timeout 10
+spawn vncpasswd
+expect "Password:"
+send "$VNC_PASSWORD\r"
+expect "Verify:"
+send "$VNC_PASSWORD\r" 
+expect "Would you like to enter a view-only password*"
+send "n\r"
+expect eof
+EOF
+
+# Se o método acima falhar, usar método direto
+if [ ! -f ~/.vnc/passwd ]; then
+  echo '$VNC_PASSWORD' | vncpasswd -f > ~/.vnc/passwd
+  chmod 600 ~/.vnc/passwd
+fi
+
+# Criar xstartup
+cat > ~/.vnc/xstartup << 'XSTART'
+#!/bin/bash
+unset SESSION_MANAGER
+unset DBUS_SESSION_BUS_ADDRESS
+export XDG_CURRENT_DESKTOP="ubuntu:GNOME"
+export XDG_SESSION_DESKTOP="ubuntu"
+export XDG_SESSION_TYPE="x11"
+
+# Aguardar X11 estar pronto
+sleep 2
+
+# Iniciar GNOME
+exec gnome-session
+XSTART
+
+chmod +x ~/.vnc/xstartup
+
+# Parar qualquer VNC existente
+vncserver -kill :1 >/dev/null 2>&1 || true
+
+# Aguardar um pouco
+sleep 2
+
+# Iniciar VNC server
+sudo vncserver :1 -geometry 1440x900 -depth 24 -localhost no
+
+# Verificar se iniciou
+sleep 3
+if netstat -tlnp 2>/dev/null | grep -q 5901; then
+  echo "VNC iniciado com sucesso na porta 5901"
+else
+  echo "ERRO: VNC não conseguiu iniciar"
+  # Tentar novamente com configurações diferentes
+  vncserver -kill :1 >/dev/null 2>&1 || true
+  sleep 2
+  DISPLAY=:1 vncserver :1 -geometry 1440x900 -depth 24 -localhost no
+fi
+VNCSETUP
+
+# Configurar XRDP
+sudo systemctl enable xrdp && systemctl start xrdp
+sudo adduser xrdp ssl-cert
+
+# Wordlists
+mkdir -p /usr/share/wordlists/passwords
+echo -e "admin\npassword\n123456\npassword123\nadmin123\nroot\ntest\nguest" > /usr/share/wordlists/passwords/common.txt
+
+mkdir -p /usr/share/wordlists/xss
+echo -e "<script>alert('XSS')</script>\n<img src=x onerror=alert('XSS')>\n<svg onload=alert('XSS')>" > /usr/share/wordlists/xss/basic.txt
+
+mkdir -p /usr/share/wordlists/directories
+echo -e "admin\nadministrator\nlogin\napi\nrest\nbackup\nconfig\ntest\ndev" > /usr/share/wordlists/directories/common.txt
+
+# Desktop shortcuts
+sudo -u $MAIN_USER mkdir -p /home/$MAIN_USER/Desktop/WebAttacks
+
+cat > /home/$MAIN_USER/Desktop/TARGET-JuiceShop.desktop << 'DESKTOP1'
+[Desktop Entry]
+Name=TARGET - Juice Shop
+Exec=firefox http://$TARGET_IP:3000
+Icon=firefox
+Terminal=false
+Type=Application
+DESKTOP1
+
+cat > /home/$MAIN_USER/Desktop/WebAttacks/BurpSuite.desktop << 'DESKTOP2'
+[Desktop Entry]
+Name=Burp Suite
+Exec=burpsuite
+Icon=applications-internet
+Terminal=false
+Type=Application
+DESKTOP2
+
+cat > /home/$MAIN_USER/Desktop/WebAttacks/OWASP-ZAP.desktop << 'DESKTOP3'
+[Desktop Entry]
+Name=OWASP ZAP
+Exec=zaproxy
+Icon=applications-internet
+Terminal=false
+Type=Application
+DESKTOP3
+
+chmod +x /home/$MAIN_USER/Desktop/*.desktop /home/$MAIN_USER/Desktop/*/*.desktop
+chown -R $MAIN_USER:$MAIN_USER /home/$MAIN_USER/Desktop/
+
+# Aliases
+sudo -u $MAIN_USER bash -c "
+  echo 'export TARGET_IP=\"$TARGET_IP\"' >> /home/$MAIN_USER/.bashrc
+  echo 'alias target=\"firefox http://$TARGET_IP:3000 &\"' >> /home/$MAIN_USER/.bashrc
+  echo 'alias burp=\"burpsuite &\"' >> /home/$MAIN_USER/.bashrc
+  echo 'alias zap=\"zaproxy &\"' >> /home/$MAIN_USER/.bashrc
+  echo 'alias sql-test=\"sqlmap -u http://$TARGET_IP:3000 --batch\"' >> /home/$MAIN_USER/.bashrc
+  echo 'alias dir-scan=\"gobuster dir -u http://$TARGET_IP:3000 -w /usr/share/wordlists/directories/common.txt\"' >> /home/$MAIN_USER/.bashrc
+  echo 'alias arsenal=\"echo WEB TOOLS: sqlmap, burp, zap, hydra, gobuster, nikto\"' >> /home/$MAIN_USER/.bashrc
+"
+
+# Attack script
+cat > /home/$MAIN_USER/Desktop/attack_suite.sh << 'ATTACK1'
+#!/bin/bash
+echo "=== JUICE SHOP ATTACK SUITE ==="
+echo "1) SQL Injection test"
+echo "2) Directory scan"
+echo "3) Nikto vulnerability scan"
+read -p "Select (1-3): " choice
+case $choice in
+  1) sqlmap -u "http://$TARGET_IP:3000/rest/user/login" --batch ;;
+  2) gobuster dir -u http://$TARGET_IP:3000 -w /usr/share/wordlists/directories/common.txt ;;
+  3) nikto -h http://$TARGET_IP:3000 ;;
+esac
+ATTACK1
+
+chmod +x /home/$MAIN_USER/Desktop/attack_suite.sh
+chown $MAIN_USER:$MAIN_USER /home/$MAIN_USER/Desktop/attack_suite.sh
+
+# Criar arquivo com informacoes de acesso
+cat > /home/$MAIN_USER/Desktop/ACESSO_LAB.txt << ACCESSINFO
+=== INFORMACOES DE ACESSO DO LABORATORIO ===
+
+VNC (Recomendado):
+- Endereco: IP_PUBLICO:5901
+- Senha: $VNC_PASSWORD
+
+RDP (Alternativo):
+- Endereco: IP_PUBLICO:3389
+- Usuario: ubuntu
+- Senha: $RDP_PASSWORD
+
+SSH:
+- Comando: ssh -i chave.pem ubuntu@IP_PUBLICO
+- Senha: $RDP_PASSWORD
+
+TARGET:
+- Juice Shop: http://$TARGET_IP:3000
+- O alvo so e acessivel internamente
+
+COMANDOS UTEIS:
+- target: Abre Juice Shop
+- burp: Abre Burp Suite
+- arsenal: Lista ferramentas
+- lab-status: Status do laboratorio
+ACCESSINFO
+
+chown $MAIN_USER:$MAIN_USER /home/$MAIN_USER/Desktop/ACESSO_LAB.txt
+
+# Firewall
+ufw --force enable
+ufw allow ssh && ufw allow 5901/tcp && ufw allow 3389/tcp
+
+# Status script
+cat > /usr/local/bin/lab-status << 'STATUS1'
+#!/bin/bash
+echo "=== LAB STATUS ==="
+netstat -tlnp | grep -q 5901 && echo "VNC: ACTIVE" || echo "VNC: INACTIVE"
+netstat -tlnp | grep -q 3389 && echo "RDP: ACTIVE" || echo "RDP: INACTIVE"
+ping -c 1 $TARGET_IP >/dev/null 2>&1 && echo "Target: OK" || echo "Target: FAIL"
+
+echo ""
+echo "=== VNC DETAILS ==="
+if netstat -tlnp | grep -q 5901; then
+  echo "VNC está rodando na porta 5901"
+  echo "Senha configurada: $VNC_PASSWORD"
+  ls -la /home/ubuntu/.vnc/passwd 2>/dev/null && echo "Arquivo de senha existe" || echo "ERRO: Arquivo de senha não encontrado"
+else
+  echo "VNC NÃO está rodando"
+  echo "Logs do VNC:"
+  tail -5 /home/ubuntu/.vnc/*.log 2>/dev/null || echo "Nenhum log encontrado"
+fi
+
+echo ""
+echo "=== COMANDOS PARA RESTART VNC ==="
+echo "sudo -u ubuntu vncserver -kill :1"
+echo "sudo -u ubuntu vncserver :1 -geometry 1440x900 -depth 24 -localhost no"
+STATUS1
+chmod +x /usr/local/bin/lab-status
+
+# Criar script para resetar VNC se necessario
+cat > /usr/local/bin/reset-vnc << 'RESETVNC'
+#!/bin/bash
+echo "=== RESETANDO VNC ==="
+
+# Parar VNC
+sudo -u ubuntu vncserver -kill :1 >/dev/null 2>&1 || true
+sleep 2
+
+# Recriar senha
+sudo -u ubuntu bash -c "
+  echo '$VNC_PASSWORD' | vncpasswd -f > ~/.vnc/passwd
+  chmod 600 ~/.vnc/passwd
+"
+
+# Restart VNC
+sudo -u ubuntu vncserver :1 -geometry 1440x900 -depth 24 -localhost no
+
+# Verificar
+sleep 3
+if netstat -tlnp | grep -q 5901; then
+  echo "✓ VNC resetado com sucesso"
+  echo "Endereço: $(curl -s ifconfig.me):5901"
+  echo "Senha: $VNC_PASSWORD"
+else
+  echo "✗ Falha ao resetar VNC"
+  echo "Logs:"
+  tail -10 /home/ubuntu/.vnc/*.log 2>/dev/null
+fi
+RESETVNC
+chmod +x /usr/local/bin/reset-vnc
+
+# Verificação final e logs
+log "=== ARSENAL CONFIGURADO ==="
+log "VNC: IP:5901 (senha: $VNC_PASSWORD)"
+log "RDP: IP:3389 (usuario: ubuntu, senha: $RDP_PASSWORD)"
+
+# Verificar status final do VNC
+if netstat -tlnp | grep -q 5901; then
+  log "✓ VNC ATIVO e funcionando"
+else
+  log "✗ VNC FALHOU - execute 'lab-status' para debug"
+  # Tentar restart automático
+  log "Tentando restart automático do VNC..."
+  sudo -u $MAIN_USER vncserver -kill :1 >/dev/null 2>&1 || true
+  sleep 2
+  sudo -u $MAIN_USER vncserver :1 -geometry 1440x900 -depth 24 -localhost no
+  sleep 3
+  netstat -tlnp | grep -q 5901 && log "✓ VNC FUNCIONOU após restart" || log "✗ VNC ainda com problema"
+fi
+EOT
+  )
+
+  target_user_data = base64encode(<<-EOT
+#!/bin/bash
+export LOG_FILE="/var/log/target-setup.log"
+export MAIN_USER="ubuntu"
+
+log() { echo "$(date '+%Y-%m-%d %H:%M:%S') - $1" | tee -a $LOG_FILE; }
+
+log "=== CONFIGURANDO ALVO ==="
+export DEBIAN_FRONTEND=noninteractive
+apt-get update -y && apt-get upgrade -y
+
+apt-get install -y curl wget git vim net-tools fail2ban
+
+usermod -aG sudo $MAIN_USER
+echo "$MAIN_USER:target2024" | chpasswd
+
+# Docker
+curl -fsSL https://download.docker.com/linux/ubuntu/gpg | gpg --dearmor -o /usr/share/keyrings/docker-archive-keyring.gpg
+echo "deb [signed-by=/usr/share/keyrings/docker-archive-keyring.gpg] https://download.docker.com/linux/ubuntu $(lsb_release -cs) stable" | tee /etc/apt/sources.list.d/docker.list
+apt-get update -y && apt-get install -y docker-ce
+systemctl enable docker && systemctl start docker
+
+# Juice Shop
+docker pull bkimminich/juice-shop:latest
+docker run -d --name juice-shop --restart unless-stopped -p 3000:3000 bkimminich/juice-shop:latest
+
+# Firewall
+ufw --force enable
+ufw allow from 172.16.1.0/24 to any port 22
+ufw allow from 172.16.1.0/24 to any port 3000
+ufw deny from any to any
+
+systemctl enable fail2ban && systemctl start fail2ban
+
+echo "ALVO: Juice Shop na porta 3000" > /home/$MAIN_USER/TARGET_INFO.txt
+chown $MAIN_USER:$MAIN_USER /home/$MAIN_USER/TARGET_INFO.txt
+
+log "=== ALVO CONFIGURADO ==="
+EOT
+  )
 }
 
 # Instância Atacante - Kali Linux
@@ -287,7 +630,7 @@ resource "aws_instance" "attacker" {
   tags = {
     Name = "${var.lab_name}-attacker"
     Type = "cybersec-attacker"
-    OS   = "Kali Linux Tools"
+    OS   = "Ubuntu + Pentesting Tools"
   }
 
   lifecycle {
@@ -343,18 +686,31 @@ output "ssh_attacker_command" {
 }
 
 output "vnc_connection" {
-  description = "Conexão VNC para desktop do atacante"
+  description = "Conexão VNC para desktop remoto"
   value       = "${aws_instance.attacker.public_ip}:5901"
 }
 
 output "rdp_connection" {
-  description = "Conexão RDP para desktop do atacante"
+  description = "Conexão RDP para desktop remoto"
   value       = "${aws_instance.attacker.public_ip}:3389"
 }
 
 output "juice_shop_url_from_attacker" {
   description = "URL do Juice Shop (acesso interno do Kali)"
   value       = "http://${aws_instance.target.private_ip}:3000"
+}
+
+output "access_credentials" {
+  description = "Credenciais de acesso ao laboratório"
+  value = {
+    vnc_address  = "${aws_instance.attacker.public_ip}:5901"
+    vnc_password = var.vnc_password
+    rdp_address  = "${aws_instance.attacker.public_ip}:3389"
+    rdp_username = "ubuntu"
+    rdp_password = var.rdp_password
+    ssh_command  = "ssh -i ${var.key_name}.pem ubuntu@${aws_instance.attacker.public_ip}"
+  }
+  sensitive = true
 }
 
 output "lab_instructions" {
@@ -366,18 +722,36 @@ output "lab_instructions" {
     - Atacante (Kali): ${aws_instance.attacker.public_ip} (público)
     - Alvo (Juice Shop): ${aws_instance.target.private_ip} (privado)
     
-    ACESSO:
-    1. SSH no Kali: ssh -i ${var.key_name}.pem ubuntu@${aws_instance.attacker.public_ip}
-    2. VNC: ${aws_instance.attacker.public_ip}:5901 (senha: vncpassword)
-    3. RDP: ${aws_instance.attacker.public_ip}:3389 (ubuntu:cybersec2024)
+    ACESSO RECOMENDADO - VNC:
+    1. Endereço: ${aws_instance.attacker.public_ip}:5901
+    2. Senha: ${var.vnc_password}
+    3. Cliente: RealVNC, TightVNC, Remmina
     
-    TESTES:
-    - Do Kali, acesse: http://${aws_instance.target.private_ip}:3000
-    - O Juice Shop só é acessível internamente do Kali
+    ACESSO ALTERNATIVO - RDP:
+    1. Endereço: ${aws_instance.attacker.public_ip}:3389
+    2. Usuário: ubuntu
+    3. Senha: ${var.rdp_password}
     
-    FERRAMENTAS NO KALI:
-    - Burp Suite: comando 'burpsuite'
-    - Metasploit: comando 'msfconsole'  
-    - Nmap, nikto, sqlmap, etc.
+    ACESSO SSH:
+    ssh -i ${var.key_name}.pem ubuntu@${aws_instance.attacker.public_ip}
+    Senha: ${var.rdp_password}
+    
+    ALVO (INTERNO):
+    - Juice Shop: http://${aws_instance.target.private_ip}:3000
+    - Só acessível da instância atacante
+    
+    FERRAMENTAS NO ATACANTE:
+    - Burp Suite: comando 'burp'
+    - OWASP ZAP: comando 'zap'  
+    - SQLMap: comando 'sql-test'
+    - Gobuster: comando 'dir-scan'
+    - Arsenal completo: comando 'arsenal'
+    
+    COMANDOS ÚTEIS:
+    - target: Abre Juice Shop no Firefox
+    - lab-status: Verifica status do laboratório
+    - reset-vnc: Reinicia VNC se necessário
+    - attack_suite.sh: Script interativo de ataques
   EOT
+  sensitive = true
 }
